@@ -1,0 +1,96 @@
+name: Build LARS Windows VST3
+
+# Se lanza a mano desde la pestaña Actions del fork.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-vst3:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout del fork
+        uses: actions/checkout@v4
+
+      - name: Descargar JUCE 7.0.12
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 7.0.12 https://github.com/juce-framework/JUCE.git JUCE
+          Get-ChildItem JUCE/modules | Select-Object Name
+
+      - name: Descargar LibTorch CPU 2.0.1 para Windows
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://download.pytorch.org/libtorch/cpu/libtorch-win-shared-with-deps-2.0.1%2Bcpu.zip" -OutFile libtorch.zip
+          Expand-Archive -Path libtorch.zip -DestinationPath torch_dl
+          $torchRoot = (Get-ChildItem torch_dl -Recurse -Directory -Filter libtorch | Select-Object -First 1).FullName
+          if (-not $torchRoot) { throw "No se encontro la carpeta libtorch tras descomprimir" }
+          "TORCH_ROOT=$torchRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem "$torchRoot/lib/*.dll" | Select-Object Name, Length
+
+      - name: Sustituir las rutas en drums_demix/CMakeLists.txt
+        shell: pwsh
+        run: |
+          $torchPath = $env:TORCH_ROOT -replace '\\', '/'
+          $jucePath = ($env:GITHUB_WORKSPACE + '/JUCE') -replace '\\', '/'
+          $file = 'drums_demix/CMakeLists.txt'
+          $text = Get-Content $file -Raw
+          $text = $text -replace 'INSERT YOUR PATH TO LIBTORCH', $torchPath
+          $text = $text -replace 'INSERT YOUR PATH TO JUCE', $jucePath
+          Set-Content $file $text -NoNewline
+          Select-String -Path $file -Pattern 'CMAKE_PREFIX_PATH|add_subdirectory' | Select-Object LineNumber, Line
+
+      - name: Configurar con CMake (Visual Studio 2022, x64)
+        shell: pwsh
+        run: |
+          cmake -S drums_demix -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_CXX_STANDARD=17 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compilar solo el VST3
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --target LARS_VST3 --parallel 2
+
+      - name: Empaquetar el VST3 con las DLL de Torch
+        shell: pwsh
+        run: |
+          $vst3 = (Get-ChildItem build -Recurse -Directory -Filter 'LARS.vst3' | Select-Object -First 1).FullName
+          if (-not $vst3) { throw "No se encontro LARS.vst3 tras compilar" }
+          "VST3_DIR=$vst3" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $binDir = Join-Path $vst3 'Contents/x86_64-win'
+          Get-ChildItem "$env:TORCH_ROOT/lib/*.dll" | Copy-Item -Destination $binDir -Force
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -Recurse -Force $vst3 'dist/LARS.vst3'
+          $leeme = @"
+          LARS para Windows (compilado desde el fork, no es un instalador oficial)
+          ------------------------------------------------------------------------
+          1. Cierra REAPER.
+          2. Copia la carpeta LARS.vst3 a C:\Program Files\Common Files\VST3
+          3. Abre REAPER y reescanea los VST3 (Preferences > Plug-ins > VST > Re-scan).
+          4. Inserta LARS en una pista, carga una bateria en estereo y pulsa Separate.
+          Si REAPER no lo carga, prueba a copiar tambien las DLL de Torch que van
+          dentro de LARS.vst3/Contents/x86_64-win junto al ejecutable de REAPER
+          o a anadir esa carpeta al PATH, y vuelve a abrir REAPER.
+          "@
+          Set-Content 'dist/LEEME-LARS-Windows.txt' $leeme -Encoding utf8
+          Compress-Archive -Path dist/* -DestinationPath LARS-Windows-VST3.zip -Force
+          Get-ChildItem LARS-Windows-VST3.zip | Select-Object Name, Length
+          (Get-FileHash LARS-Windows-VST3.zip -Algorithm SHA256).Hash
+
+      - name: Publicar release en el fork con el ZIP
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "lars-windows-${env:GITHUB_RUN_NUMBER}"
+          gh release create $tag LARS-Windows-VST3.zip --title "LARS Windows VST3 (build ${env:GITHUB_RUN_NUMBER})" --notes "VST3 de LARS compilado con GitHub Actions (Windows, VS 2022, JUCE 7.0.12, LibTorch CPU 2.0.1). No es un instalador oficial: ver LEEME-LARS-Windows.txt dentro del ZIP."
+
+      - name: Subir el ZIP como artefacto (respaldo)
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: LARS-Windows-VST3
+          path: LARS-Windows-VST3.zip
+          retention-days: 7
