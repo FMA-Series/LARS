@@ -9,11 +9,26 @@ permissions:
 
 jobs:
   build-windows-vst3:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 360
     steps:
       - name: Checkout del fork
         uses: actions/checkout@v4
+
+      - name: Diagnosticar Visual Studio instalado
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vswhere) { & $vswhere -all -property installationPath } else { Write-Host 'vswhere no encontrado' }
+          Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio" -ErrorAction SilentlyContinue | Select-Object Name
+          cmake --version
+          where.exe cmake
+
+      - name: Preparar entorno MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Descargar JUCE 7.0.12
         shell: pwsh
