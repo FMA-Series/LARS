@@ -55,8 +55,14 @@ jobs:
           $text = Get-Content $file -Raw
           $text = $text -replace 'INSERT YOUR PATH TO LIBTORCH', $torchPath
           $text = $text -replace 'INSERT YOUR PATH TO JUCE', $jucePath
+          $text = $text -replace 'COPY_PLUGIN_AFTER_BUILD TRUE', 'COPY_PLUGIN_AFTER_BUILD FALSE'
           Set-Content $file $text -NoNewline
           Select-String -Path $file -Pattern 'CMAKE_PREFIX_PATH|add_subdirectory' | Select-Object LineNumber, Line
+
+      - name: Anadir LibTorch al PATH para el post-proceso del VST3
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:TORCH_ROOT\lib"
 
       - name: Configurar con CMake (Visual Studio 2022, x64)
         shell: pwsh
